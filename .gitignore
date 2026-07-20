@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+annotations/
+inspection_annotations*.json
