@@ -124,6 +124,21 @@ def matches_confusion_filter(path, annotations, confusion_cell, confusion_light,
     return get_confusion_cell(path, annotation) == confusion_cell
 
 
+def build_confusion_basename_set(annotations, confusion_cell, confusion_light):
+    confusion_cell = (confusion_cell or "").upper()
+    confusion_light = confusion_light or ""
+    if confusion_cell not in ("TP", "FN", "FP", "TN"):
+        return None
+
+    matched = set()
+    for annotation_path, annotation in annotations.items():
+        if confusion_light and confusion_light != "All" and get_light_type(annotation_path) != confusion_light:
+            continue
+        if get_confusion_cell(annotation_path, annotation) == confusion_cell:
+            matched.add(path_basename(annotation_path))
+    return matched
+
+
 def load_annotations():
     if not ANNOTATION_FILE.exists():
         return {}
@@ -435,10 +450,17 @@ class InspectionHandler(BaseHTTPRequestHandler):
                 path for path in original_paths
                 if get_model_prediction(path) == model_prediction_filter
             ]
-        original_paths = [
-            path for path in original_paths
-            if matches_confusion_filter(path, annotations, confusion_cell, confusion_light, annotation_index)
-        ]
+        confusion_basename_set = build_confusion_basename_set(annotations, confusion_cell, confusion_light)
+        if confusion_basename_set is not None:
+            original_paths = [
+                path for path in original_paths
+                if path_basename(path) in confusion_basename_set
+            ]
+        else:
+            original_paths = [
+                path for path in original_paths
+                if matches_confusion_filter(path, annotations, confusion_cell, confusion_light, annotation_index)
+            ]
         total_pages = max(1, (len(original_paths) + per_page - 1) // per_page)
         page = min(page, total_pages)
         start = (page - 1) * per_page
