@@ -18,6 +18,7 @@ const controls = {
   remainingPagesText: document.querySelector("#remainingPagesText"),
   bulkDefaultActions: document.querySelector("#bulkDefaultActions"),
   bulkDefaultCorrect: document.querySelector("#bulkDefaultCorrect"),
+  undoBulkDefault: document.querySelector("#undoBulkDefault"),
   bulkDefaultHint: document.querySelector("#bulkDefaultHint"),
   modelFilterButtons: document.querySelectorAll("[data-model-filter]"),
 };
@@ -33,6 +34,8 @@ const statsEls = {
   tn: document.querySelector("#statTn"),
   fpr: document.querySelector("#falsePositiveRate"),
   fnr: document.querySelector("#falseNegativeRate"),
+  hzFpr: document.querySelector("#hzFalsePositiveRate"),
+  hzFnr: document.querySelector("#hzFalseNegativeRate"),
   byLight: document.querySelector("#lightStatsList"),
   refresh: document.querySelector("#refreshStats"),
 };
@@ -48,6 +51,7 @@ let confusionFilter = {
 };
 let clearMatrixFilterButton = null;
 let activeMatrixFilterText = null;
+let pendingBulkUndoEntries = [];
 
 function nowIso() {
   return new Date().toISOString();
@@ -96,6 +100,50 @@ function updateBulkDefaultAction() {
       ? `仅处理当前页未打标图片：${untaggedCount} 张。已打标图片不会覆盖。`
       : "";
   }
+  if (controls.undoBulkDefault) {
+    controls.undoBulkDefault.disabled = !show || !pendingBulkUndoEntries.length;
+  }
+}
+
+function cloneAnnotationSnapshot(annotation) {
+  if (!annotation) return null;
+  return {
+    verdict: annotation.verdict || "",
+    greenDefect: Boolean(annotation.greenDefect),
+    greenDefectRegions: Array.isArray(annotation.greenDefectRegions) ? annotation.greenDefectRegions.map((item) => ({ ...item })) : [],
+    detectionIssues: Array.isArray(annotation.detectionIssues) ? [...annotation.detectionIssues] : [],
+    missRegions: Array.isArray(annotation.missRegions) ? annotation.missRegions.map((item) => ({ ...item })) : [],
+    falseRegions: Array.isArray(annotation.falseRegions) ? annotation.falseRegions.map((item) => ({ ...item })) : [],
+    note: annotation.note || "",
+    imageName: annotation.imageName || "",
+    updatedAt: annotation.updatedAt || "",
+  };
+}
+
+function buildSavedSnapshotFromState(state) {
+  if (!isTagged(state)) return null;
+  return cloneAnnotationSnapshot({
+    verdict: state.verdict,
+    greenDefect: state.greenDefect,
+    greenDefectRegions: state.greenDefectRegions,
+    detectionIssues: state.detectionIssues,
+    missRegions: state.missRegions,
+    falseRegions: state.falseRegions,
+    note: state.note,
+    imageName: state.item.name,
+    updatedAt: nowIso(),
+  });
+}
+
+async function restoreAnnotations(entries) {
+  const response = await fetch("/api/annotations/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "撤销失败。");
+  return data;
 }
 
 function isTagged(state) {
@@ -227,6 +275,10 @@ function statsBlock(label, stats) {
         <span>错检率 <strong>${formatRate(stats.falsePositiveRate)}</strong></span>
         <span>漏检率 <strong>${formatRate(stats.falseNegativeRate)}</strong></span>
       </div>
+      <div class="light-rate-row">
+        <span>HZ_错检率 <strong>${formatRate(stats.hzFalsePositiveRate)}</strong></span>
+        <span>HZ_漏检率 <strong>${formatRate(stats.hzFalseNegativeRate)}</strong></span>
+      </div>
       <div class="light-stat-meta">统计 ${stats.total} 条，跳过 ${stats.skipped} 条</div>
     </section>
   `;
@@ -245,6 +297,8 @@ async function loadStats() {
     statsEls.tn.textContent = data.tn;
     statsEls.fpr.textContent = formatRate(data.falsePositiveRate);
     statsEls.fnr.textContent = formatRate(data.falseNegativeRate);
+    statsEls.hzFpr.textContent = formatRate(data.hzFalsePositiveRate);
+    statsEls.hzFnr.textContent = formatRate(data.hzFalseNegativeRate);
     statsEls.meta.textContent = `已统计 ${data.total} 条保存评价，跳过 ${data.skipped} 条未完成或无法解析记录。`;
     if (statsEls.byLight) {
       const entries = Object.entries(data.byLight || {});
@@ -358,6 +412,8 @@ function renderCard(item) {
     drawing: false,
     start: null,
     draft: null,
+    serverSnapshot: isTagged({ verdict: annotation.verdict }) ? cloneAnnotationSnapshot(annotation) : null,
+    undoSnapshot: null,
   };
   updateTaggedState(node, state, stateLabel);
 
@@ -369,6 +425,7 @@ function renderCard(item) {
   img.src = item.imageUrl;
   img.alt = item.name;
   noteInput.value = state.note;
+  const undoSaveButton = node.querySelector('[data-action="undo-save"]');
 
   img.addEventListener("load", () => {
     syncCanvasSize(img, canvas);
@@ -477,7 +534,11 @@ function renderCard(item) {
     stateLabel.classList.remove("saved");
     stateLabel.classList.remove("error");
     node.classList.remove("needs-verdict");
+    if (undoSaveButton) {
+      undoSaveButton.disabled = true;
+    }
     try {
+      const previousSnapshot = cloneAnnotationSnapshot(state.serverSnapshot);
       const response = await fetch("/api/annotation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -496,8 +557,13 @@ function renderCard(item) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "保存失败。");
       state.savedTagged = true;
+      state.serverSnapshot = cloneAnnotationSnapshot(data.annotation);
+      state.undoSnapshot = previousSnapshot;
       stateLabel.textContent = "已保存";
       stateLabel.classList.add("saved");
+      if (undoSaveButton) {
+        undoSaveButton.disabled = false;
+      }
       updateTaggedState(node, state, stateLabel);
       updateBulkDefaultAction();
       await loadStats();
@@ -505,8 +571,54 @@ function renderCard(item) {
       stateLabel.textContent = error.message;
       stateLabel.classList.remove("saved");
       stateLabel.classList.add("error");
+      if (undoSaveButton) {
+        undoSaveButton.disabled = state.undoSnapshot === null || state.undoSnapshot === undefined;
+      }
     }
   });
+
+  if (undoSaveButton) {
+    undoSaveButton.addEventListener("click", async () => {
+      if (undoSaveButton.disabled || state.undoSnapshot === undefined) return;
+      const restoreTarget = state.undoSnapshot === null ? null : cloneAnnotationSnapshot(state.undoSnapshot);
+      stateLabel.textContent = "撤销中...";
+      stateLabel.classList.remove("error");
+      undoSaveButton.disabled = true;
+      try {
+        await restoreAnnotations([{ originalPath: item.originalPath, annotation: restoreTarget }]);
+
+        const restored = normalizeAnnotation(restoreTarget || {});
+        state.verdict = restored.verdict;
+        state.greenDefect = restored.greenDefect;
+        state.greenDefectRegions = restored.greenDefectRegions;
+        state.detectionIssues = restored.detectionIssues;
+        state.missRegions = restored.missRegions;
+        state.falseRegions = restored.falseRegions;
+        state.activeIssue = state.greenDefect ? "绿色缺陷" : (state.detectionIssues[0] || "");
+        state.note = restored.note;
+        noteInput.value = state.note;
+        state.savedTagged = isTagged(state);
+        state.serverSnapshot = cloneAnnotationSnapshot(restoreTarget);
+        state.undoSnapshot = null;
+
+        updateButtons(node, state);
+        updateTaggedState(node, state, stateLabel);
+        drawRegions(canvas, state);
+        stateLabel.textContent = state.savedTagged ? "已恢复到保存前" : "已撤销本次保存";
+        if (state.savedTagged) {
+          stateLabel.classList.add("saved");
+        } else {
+          stateLabel.classList.remove("saved");
+        }
+        await loadStats();
+        updateBulkDefaultAction();
+      } catch (error) {
+        stateLabel.textContent = error.message;
+        stateLabel.classList.add("error");
+        undoSaveButton.disabled = false;
+      }
+    });
+  }
 
   updateButtons(node, state);
   gallery.appendChild(node);
@@ -655,6 +767,9 @@ async function bulkDefaultCorrectCurrentPage() {
 
   controls.bulkDefaultCorrect.disabled = true;
   setStatus(`正在批量保存当前页 ${paths.length} 张未打标图片...`);
+  const previousByPath = new Map(
+    currentPageCards.map(({ state }) => [state.item.originalPath, cloneAnnotationSnapshot(state.serverSnapshot)])
+  );
 
   try {
     const response = await fetch("/api/annotations/bulk-default-correct", {
@@ -668,9 +783,38 @@ async function bulkDefaultCorrectCurrentPage() {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "批量保存失败。");
+    pendingBulkUndoEntries = (data.updatedPaths || []).map((path) => ({
+      originalPath: path,
+      annotation: previousByPath.get(path) || null,
+    }));
     setStatus(`批量保存完成：新增默认标注 ${data.updated} 张，跳过已打标 ${data.skipped} 张。`);
     await loadStats();
     await loadImages();
+    updateBulkDefaultAction();
+  } catch (error) {
+    setStatus(error.message, true);
+    updateBulkDefaultAction();
+  }
+}
+
+async function undoBulkDefaultCurrentPage() {
+  if (!pendingBulkUndoEntries.length) {
+    setStatus("没有可撤销的批量默认标注记录。");
+    return;
+  }
+
+  if (controls.undoBulkDefault) {
+    controls.undoBulkDefault.disabled = true;
+  }
+  setStatus(`正在撤销上次批量默认标注（${pendingBulkUndoEntries.length} 张）...`);
+
+  try {
+    await restoreAnnotations(pendingBulkUndoEntries);
+    setStatus(`已撤销上次批量默认标注：恢复 ${pendingBulkUndoEntries.length} 张。`);
+    pendingBulkUndoEntries = [];
+    await loadStats();
+    await loadImages();
+    updateBulkDefaultAction();
   } catch (error) {
     setStatus(error.message, true);
     updateBulkDefaultAction();
@@ -697,6 +841,9 @@ if (controls.nextPage) {
 }
 if (controls.bulkDefaultCorrect) {
   controls.bulkDefaultCorrect.addEventListener("click", bulkDefaultCorrectCurrentPage);
+}
+if (controls.undoBulkDefault) {
+  controls.undoBulkDefault.addEventListener("click", undoBulkDefaultCurrentPage);
 }
 controls.modelFilterButtons.forEach((button) => {
   button.addEventListener("click", () => {

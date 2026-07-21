@@ -164,6 +164,29 @@ textarea {
   background: var(--brand-strong);
 }
 
+.save-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.undo-save-btn {
+  background: #f3f5f8;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.undo-save-btn:hover {
+  background: #e9eef4;
+}
+
+.undo-save-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
 .status {
   margin: 14px 0;
   color: var(--muted);
@@ -241,6 +264,12 @@ textarea {
   border-color: #0f2d57;
   color: #fff;
   font-weight: 700;
+}
+
+#undoBulkDefault {
+  background: #f3f5f8;
+  border: 1px solid var(--line);
+  color: var(--text);
 }
 
 .bulk-default-actions button:disabled {

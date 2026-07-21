@@ -95,6 +95,7 @@
         </nav>
         <div class="bulk-default-actions hidden" id="bulkDefaultActions">
           <button id="bulkDefaultCorrect" type="button"></button>
+          <button id="undoBulkDefault" type="button" disabled>撤销上次批量默认标注</button>
           <div id="bulkDefaultHint" class="bulk-default-hint"></div>
         </div>
       </div>
@@ -146,10 +147,20 @@
             <span>漏检率</span>
             <strong id="falseNegativeRate">-</strong>
           </div>
+          <div>
+            <span>HZ_错检率</span>
+            <strong id="hzFalsePositiveRate">-</strong>
+          </div>
+          <div>
+            <span>HZ_漏检率</span>
+            <strong id="hzFalseNegativeRate">-</strong>
+          </div>
         </div>
         <div class="stats-rule">
           错检率 = FP / (FP + TN)<br>
-          漏检率 = FN / (FN + TP)
+          漏检率 = FN / (FN + TP)<br>
+          HZ_错检率 = FP / (TP + FN + FP + TN)<br>
+          HZ_漏检率 = FN / (TP + FN + FP + TN)
         </div>
         <div class="light-stats">
           <h3>按 Light 统计</h3>
@@ -193,7 +204,10 @@
           <span class="active-draw-hint">选择漏检、错检或绿色缺陷后，在图片上拖拽画框。</span>
         </div>
         <textarea placeholder="备注，可选"></textarea>
-        <button class="save-btn" type="button">保存评价</button>
+        <div class="save-actions">
+          <button class="save-btn" type="button">保存评价</button>
+          <button class="undo-save-btn" type="button" data-action="undo-save" disabled>撤销本次保存</button>
+        </div>
       </div>
     </article>
   </template>

@@ -71,11 +71,14 @@ def empty_stats():
 def finalize_stats(stats):
     false_positive_denominator = stats["fp"] + stats["tn"]
     false_negative_denominator = stats["fn"] + stats["tp"]
+    total = stats["tn"] + stats["fp"] + stats["fn"] + stats["tp"]
     return {
         **stats,
-        "total": stats["tn"] + stats["fp"] + stats["fn"] + stats["tp"],
+        "total": total,
         "falsePositiveRate": stats["fp"] / false_positive_denominator if false_positive_denominator else None,
         "falseNegativeRate": stats["fn"] / false_negative_denominator if false_negative_denominator else None,
+        "hzFalsePositiveRate": stats["fp"] / total if total else None,
+        "hzFalseNegativeRate": stats["fn"] / total if total else None,
         "falsePositiveDenominator": false_positive_denominator,
         "falseNegativeDenominator": false_negative_denominator,
     }
@@ -371,6 +374,8 @@ class InspectionHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/annotation":
             self.handle_save_annotation()
+        elif parsed.path == "/api/annotations/restore":
+            self.handle_annotations_restore()
         elif parsed.path == "/api/annotations/bulk-default-correct":
             self.handle_bulk_default_correct()
         elif parsed.path == "/api/annotations/import":
@@ -571,6 +576,61 @@ class InspectionHandler(BaseHTTPRequestHandler):
         annotations[original_path] = annotation
         save_annotations(annotations)
         self.send_json({"ok": True, "annotation": annotation})
+
+    def handle_annotations_restore(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_json({"error": "恢复数据格式错误。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        entries = payload.get("entries", []) if isinstance(payload, dict) else []
+        if not isinstance(entries, list) or not entries:
+            self.send_json({"error": "缺少可恢复的评价记录。"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        annotations = load_annotations()
+        restored = 0
+        deleted = 0
+        skipped = 0
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                skipped += 1
+                continue
+
+            original_path = entry.get("originalPath", "")
+            if not isinstance(original_path, str) or not original_path:
+                skipped += 1
+                continue
+
+            if entry.get("annotation") is None:
+                if original_path in annotations:
+                    del annotations[original_path]
+                    deleted += 1
+                continue
+
+            annotation = entry.get("annotation")
+            if not isinstance(annotation, dict):
+                skipped += 1
+                continue
+
+            normalized = normalize_annotation(annotation)
+            normalized["imageName"] = normalized.get("imageName") or os.path.basename(original_path)
+            annotations[original_path] = normalized
+            restored += 1
+
+        if restored or deleted:
+            save_annotations(annotations)
+
+        self.send_json({
+            "ok": True,
+            "restored": restored,
+            "deleted": deleted,
+            "skipped": skipped,
+            "total": len(annotations),
+        })
 
     def handle_annotations_import(self):
         length = int(self.headers.get("Content-Length", "0"))
